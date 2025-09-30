@@ -1,0 +1,412 @@
+<!doctype html>
+<html lang="pt-br">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Solicitação de Materiais</title>
+  <!-- Bootstrap CSS -->
+  <link
+    href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
+    rel="stylesheet"
+    integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH"
+    crossorigin="anonymous"
+  />
+  <style>
+    body { background: #f8fafc; }
+    .page-header { border-bottom: 1px solid #e5e7eb; }
+    .section-title { font-weight: 600; color: #334155; }
+    .table thead th { background: #e9f0ff; color: #0f172a; }
+    .top-actions { gap: .5rem; }
+    .required::after { content: " *"; color: #dc3545; }
+
+    /* Impressão */
+    @media print {
+      .no-print { display: none !important; }
+      body { background: white; }
+      .card { box-shadow: none; border: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container py-3">
+    <div class="d-flex justify-content-between align-items-center page-header pb-2 mb-3">
+      <h1 class="h4 m-0">Solicitação de Materiais</h1>
+      <div class="top-actions d-flex no-print">
+        <button id="btnToggleEdit" class="btn btn-primary">Editar todos</button>
+        <button id="btnSalvar" class="btn btn-success">Salvar solicitação</button>
+        <button id="btnImprimir" class="btn btn-outline-primary">Imprimir</button>
+      </div>
+    </div>
+
+    <div id="appAlerts" class="no-print"></div>
+
+    <div class="card mb-3">
+      <div class="card-body">
+        <div class="row g-3">
+          <div class="col-md-6">
+            <label for="solicitante" class="form-label required">Solicitante</label>
+            <input type="text" id="solicitante" class="form-control" placeholder="Nome do solicitante" />
+          </div>
+          <div class="col-md-6">
+            <label for="centroCusto" class="form-label required">Centro de custo</label>
+            <select id="centroCusto" class="form-select">
+              <option value="">Carregando...</option>
+            </select>
+          </div>
+          <div class="col-12">
+            <label for="narrativa" class="form-label">Narrativa</label>
+            <textarea id="narrativa" class="form-control" rows="3" placeholder="Descreva a necessidade, observações etc."></textarea>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card mb-3">
+      <div class="card-header bg-white">
+        <span class="section-title">Itens</span>
+      </div>
+      <div class="card-body">
+        <div class="row g-3 align-items-end">
+          <div class="col-md-6">
+            <label for="produto" class="form-label required">Produto</label>
+            <select id="produto" class="form-select">
+              <option value="">Carregando...</option>
+            </select>
+          </div>
+          <div class="col-md-3">
+            <label for="quantidade" class="form-label required">Quantidade</label>
+            <input type="number" min="1" step="1" id="quantidade" class="form-control" placeholder="0" />
+          </div>
+          <div class="col-md-3 d-flex gap-2 no-print">
+            <button id="btnAdicionar" class="btn btn-success flex-fill">Adicionar</button>
+            <button id="btnLimpar" class="btn btn-primary flex-fill" type="button">Limpar</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="table-responsive">
+        <table class="table align-middle mb-0">
+          <thead>
+            <tr>
+              <th style="width:50%">Produto</th>
+              <th style="width:20%">Quantidade</th>
+              <th class="no-print" style="width:30%">Opções</th>
+            </tr>
+          </thead>
+          <tbody id="tbodyItens"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <footer class="text-muted small">
+      <p class="mb-0">Preencha os campos obrigatórios e adicione os itens antes de salvar.</p>
+    </footer>
+  </div>
+
+  <!-- Bootstrap JS (opcional para componentes como toasts/modals) -->
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js" integrity="sha384-YvpcrYf0tY3lHB60NNkmXc5s9fDVZLESaAA55NDzOxhy9GkcIdslK1eN7N6jIeHz" crossorigin="anonymous"></script>
+
+  <script>
+    // =====================
+    // Configuração de APIs
+    // =====================
+    // Ajuste as URLs abaixo para apontar para suas APIs.
+    // As APIs esperadas:
+    // - GET centros de custo: retorna array de { id, nome }
+    // - GET produtos: retorna array de { id, nome }
+    // - POST salvar solicitação: recebe { solicitante, centroCustoId, narrativa, itens:[{produtoId, quantidade}] }
+    const API = {
+      centrosCustoUrl: 'https://example.com/api/centros-custo',
+      produtosUrl: 'https://novaapi-lb2.vendaerp.com.br/v3/produtos/produtos',
+      salvarSolicitacaoUrl: 'https://example.com/api/solicitacoes'
+    };
+
+    // Toggle para simular dados caso APIs falhem (mantém a página utilizável)
+    const USE_FALLBACK_ON_ERROR = true;
+
+    // Estado da aplicação
+    const state = {
+      centrosCusto: [],
+      produtos: [],
+      itens: [], // { idTemp, produtoId, produtoNome, quantidade }
+      editMode: false
+    };
+
+    // Utilidades UI
+    function showAlert(type, message) {
+      const wrapper = document.createElement('div');
+      wrapper.className = `alert alert-${type} alert-dismissible fade show`;
+      wrapper.role = 'alert';
+      wrapper.innerHTML = `\n        <div>${message}</div>\n        <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>\n      `;
+      document.getElementById('appAlerts').appendChild(wrapper);
+    }
+
+    function setLoading(selectEl, isLoading) {
+      if (!selectEl) return;
+      if (isLoading) {
+        selectEl.innerHTML = '<option value="">Carregando...</option>';
+        selectEl.disabled = true;
+      } else {
+        selectEl.disabled = false;
+      }
+    }
+
+    // Fetch helpers
+    async function fetchJson(url) {
+      const resp = await fetch(url, { headers: { 'Accept': 'application/json' } });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      return await resp.json();
+    }
+
+    // Carregar centros de custo
+    async function loadCentrosCusto() {
+      const select = document.getElementById('centroCusto');
+      setLoading(select, true);
+      try {
+        const data = await fetchJson(API.centrosCustoUrl);
+        state.centrosCusto = Array.isArray(data) ? data : [];
+      } catch (e) {
+        if (USE_FALLBACK_ON_ERROR) {
+          state.centrosCusto = [
+            { id: 'cc-1', nome: 'Administrativo' },
+            { id: 'cc-2', nome: 'Operações' },
+            { id: 'cc-3', nome: 'Tecnologia' }
+          ];
+          showAlert('warning', 'Falha ao buscar Centros de Custo na API. Usando dados temporários.');
+        } else {
+          showAlert('danger', 'Não foi possível carregar Centros de Custo.');
+        }
+      } finally {
+        renderCentrosCusto();
+        setLoading(select, false);
+      }
+    }
+
+    function renderCentrosCusto() {
+      const select = document.getElementById('centroCusto');
+      select.innerHTML = '<option value="">Selecione...</option>' +
+        state.centrosCusto.map(cc => `<option value="${cc.id}">${cc.nome}</option>`).join('');
+    }
+
+    // Carregar produtos
+    async function loadProdutos() {
+      const select = document.getElementById('produto');
+      setLoading(select, true);
+      try {
+        const data = await fetchJson(API.produtosUrl);
+        state.produtos = Array.isArray(data) ? data : [];
+      } catch (e) {
+        if (USE_FALLBACK_ON_ERROR) {
+          state.produtos = [
+            { id: 'p-1', nome: 'Caneta esferográfica' },
+            { id: 'p-2', nome: 'Caderno brochura' },
+            { id: 'p-3', nome: 'Papel A4' }
+          ];
+          showAlert('warning', 'Falha ao buscar Produtos na API. Usando dados temporários.');
+        } else {
+          showAlert('danger', 'Não foi possível carregar Produtos.');
+        }
+      } finally {
+        renderProdutos();
+        setLoading(select, false);
+      }
+    }
+
+    function renderProdutos() {
+      const select = document.getElementById('produto');
+      select.innerHTML = '<option value="">Selecione...</option>' +
+        state.produtos.map(p => `<option value="${p.id}">${p.nome}</option>`).join('');
+    }
+
+    // Manipulação de itens
+    function addItem() {
+      const produtoId = document.getElementById('produto').value;
+      const quantidade = parseInt(document.getElementById('quantidade').value, 10);
+      if (!produtoId) return showAlert('warning', 'Selecione um produto.');
+      if (!quantidade || quantidade <= 0) return showAlert('warning', 'Informe uma quantidade válida.');
+
+      const produto = state.produtos.find(p => String(p.id) === String(produtoId));
+      if (!produto) return showAlert('danger', 'Produto selecionado é inválido.');
+
+      // Se já existir produto na lista, soma quantidade
+      const existente = state.itens.find(i => String(i.produtoId) === String(produtoId));
+      if (existente) {
+        existente.quantidade += quantidade;
+      } else {
+        state.itens.push({ idTemp: crypto.randomUUID(), produtoId, produtoNome: produto.nome, quantidade });
+      }
+
+      renderItens();
+      clearItemForm();
+    }
+
+    function clearItemForm() {
+      document.getElementById('produto').value = '';
+      document.getElementById('quantidade').value = '';
+      document.getElementById('produto').focus();
+    }
+
+    function removeItem(idTemp) {
+      state.itens = state.itens.filter(i => i.idTemp !== idTemp);
+      renderItens();
+    }
+
+    function updateQuantidade(idTemp, novaQtd) {
+      const item = state.itens.find(i => i.idTemp === idTemp);
+      if (!item) return;
+      const q = parseInt(novaQtd, 10);
+      if (!q || q <= 0) return; // simples validação inline
+      item.quantidade = q;
+    }
+
+    function renderItens() {
+      const tbody = document.getElementById('tbodyItens');
+      if (!state.itens.length) {
+        tbody.innerHTML = '<tr><td colspan="3" class="text-center text-muted">Nenhum item adicionado.</td></tr>';
+        return;
+      }
+
+      tbody.innerHTML = state.itens.map(item => {
+        const qtdCell = state.editMode
+          ? `<input type="number" min="1" step="1" class="form-control form-control-sm" value="${item.quantidade}" data-id="${item.idTemp}" />`
+          : `<span>${item.quantidade}</span>`;
+
+        const opcoes = state.editMode
+          ? `<button class="btn btn-sm btn-outline-danger" data-action="remover" data-id="${item.idTemp}">Remover</button>`
+          : `
+            <div class="btn-group btn-group-sm" role="group">
+              <button class="btn btn-outline-secondary" data-action="editar1" data-id="${item.idTemp}">Editar</button>
+              <button class="btn btn-outline-danger" data-action="remover" data-id="${item.idTemp}">Remover</button>
+            </div>`;
+
+        return `
+          <tr>
+            <td>${item.produtoNome}</td>
+            <td style="max-width:140px">${qtdCell}</td>
+            <td class="no-print">${opcoes}</td>
+          </tr>`;
+      }).join('');
+
+      // Eventos de inputs em modo edição
+      if (state.editMode) {
+        tbody.querySelectorAll('input[type="number"]').forEach(inp => {
+          inp.addEventListener('change', (e) => {
+            updateQuantidade(e.target.dataset.id, e.target.value);
+          });
+        });
+      }
+
+      // Eventos de botões por linha
+      tbody.querySelectorAll('[data-action]').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+          const action = e.currentTarget.dataset.action;
+          const id = e.currentTarget.dataset.id;
+          if (action === 'remover') removeItem(id);
+          if (action === 'editar1') {
+            // Atalho: trocar para modo edição e focar no input da linha
+            state.editMode = true;
+            renderItens();
+            const inp = tbody.querySelector(`input[data-id="${id}"]`);
+            if (inp) inp.focus();
+            updateEditButton();
+          }
+        });
+      });
+    }
+
+    // Salvar solicitação
+    async function salvarSolicitacao() {
+      const solicitante = document.getElementById('solicitante').value.trim();
+      const centroCustoId = document.getElementById('centroCusto').value;
+      const narrativa = document.getElementById('narrativa').value.trim();
+
+      if (!solicitante) return showAlert('warning', 'Informe o nome do solicitante.');
+      if (!centroCustoId) return showAlert('warning', 'Selecione um Centro de Custo.');
+      if (!state.itens.length) return showAlert('warning', 'Adicione pelo menos um item.');
+
+      const payload = {
+        solicitante,
+        centroCustoId,
+        narrativa,
+        itens: state.itens.map(i => ({ produtoId: i.produtoId, quantidade: i.quantidade }))
+      };
+
+      // desabilita botão enquanto salva
+      const btnSalvar = document.getElementById('btnSalvar');
+      btnSalvar.disabled = true;
+      btnSalvar.innerText = 'Salvando...';
+
+      try {
+        const resp = await fetch(API.salvarSolicitacaoUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json'
+          },
+          body: JSON.stringify(payload)
+        });
+
+        if (!resp.ok) throw new Error(`Falha ao salvar: HTTP ${resp.status}`);
+        const data = await resp.json().catch(() => ({}));
+        showAlert('success', 'Solicitação salva com sucesso.');
+        // opcional: exibir número/ID retornado
+        if (data && (data.id || data.numero)) {
+          showAlert('info', `Protocolo: ${data.id || data.numero}`);
+        }
+      } catch (e) {
+        if (USE_FALLBACK_ON_ERROR) {
+          showAlert('warning', 'Não foi possível salvar na API. Simulando salvamento local.');
+          console.log('Payload (simulado):', payload);
+        } else {
+          showAlert('danger', 'Erro ao salvar solicitação. Tente novamente.');
+        }
+      } finally {
+        btnSalvar.disabled = false;
+        btnSalvar.innerText = 'Salvar solicitação';
+      }
+    }
+
+    // Modo edição geral
+    function toggleEditMode() {
+      state.editMode = !state.editMode;
+      updateEditButton();
+      renderItens();
+    }
+
+    function updateEditButton() {
+      const btn = document.getElementById('btnToggleEdit');
+      btn.textContent = state.editMode ? 'Concluir edição' : 'Editar todos';
+    }
+
+    // Eventos principais
+    function setupEvents() {
+      document.getElementById('btnAdicionar').addEventListener('click', (e) => {
+        e.preventDefault();
+        addItem();
+      });
+
+      document.getElementById('btnLimpar').addEventListener('click', (e) => {
+        e.preventDefault();
+        clearItemForm();
+      });
+
+      document.getElementById('btnSalvar').addEventListener('click', (e) => {
+        e.preventDefault();
+        salvarSolicitacao();
+      });
+
+      document.getElementById('btnImprimir').addEventListener('click', () => window.print());
+      document.getElementById('btnToggleEdit').addEventListener('click', toggleEditMode);
+    }
+
+    // Inicialização
+    async function init() {
+      setupEvents();
+      renderItens();
+      await Promise.all([loadCentrosCusto(), loadProdutos()]);
+    }
+
+    window.addEventListener('DOMContentLoaded', init);
+  </script>
+</body>
+</html>

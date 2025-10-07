@@ -19,6 +19,28 @@
     .top-actions { gap: .5rem; }
     .required::after { content: " *"; color: #dc3545; }
 
+    /* Overlay de carregamento global */
+    .loading-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(15, 23, 42, 0.35);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 5000; /* bem acima da modal/backdrop do Bootstrap */
+    }
+    .loading-card {
+      background: #fff;
+      border-radius: .5rem;
+      box-shadow: 0 10px 30px rgba(0,0,0,.15);
+      padding: 1.25rem 1.5rem;
+      display: flex;
+      gap: .75rem;
+      align-items: center;
+      min-width: 240px;
+    }
+    .loading-text { font-weight: 500; color: #0f172a; }
+
     /* Impressão */
     @media print {
       .no-print { display: none !important; }
@@ -68,10 +90,13 @@
       <div class="card-body">
         <div class="row g-3 align-items-end">
           <div class="col-md-6">
-            <label for="produto" class="form-label required">Produto</label>
-            <select id="produto" class="form-select">
-              <option value="">Carregando...</option>
-            </select>
+            <label class="form-label required">Produto</label>
+            <div class="d-flex gap-2">
+              <button id="btnAbrirModalProdutos" type="button" class="btn btn-outline-secondary flex-shrink-0">Selecionar produto(s)</button>
+              <select id="produto" class="form-select d-none">
+                <option value="">Carregando...</option>
+              </select>
+            </div>
           </div>
           <div class="col-md-3">
             <label for="quantidade" class="form-label required">Quantidade</label>
@@ -106,6 +131,54 @@
   <!-- Bootstrap JS (opcional para componentes como toasts/modals) -->
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js" integrity="sha384-YvpcrYf0tY3lHB60NNkmXc5s9fDVZLESaAA55NDzOxhy9GkcIdslK1eN7N6jIeHz" crossorigin="anonymous"></script>
 
+  <!-- Overlay de Carregamento -->
+  <div id="globalLoading" class="loading-backdrop d-none" aria-hidden="true">
+    <div class="loading-card">
+      <div class="spinner-border text-primary" role="status" aria-hidden="true"></div>
+      <div class="loading-text" id="globalLoadingText">Carregando...</div>
+    </div>
+  </div>
+
+  <!-- Modal Seleção de Produtos -->
+  <div class="modal fade" id="modalProdutos" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-xl modal-dialog-scrollable">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title">Selecionar produtos</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <div class="row g-2 mb-2 align-items-center">
+            <div class="col-sm-6 col-md-4">
+              <input id="produtoSearch" type="search" class="form-control" placeholder="Buscar por código ou nome" />
+            </div>
+            <div class="col-auto">
+              <button id="btnCarregarProdutos" type="button" class="btn btn-outline-primary">Carregar todos</button>
+            </div>
+            <div id="lblModalProdutosInfo" class="col text-muted small d-flex align-items-center"></div>
+          </div>
+          <div class="table-responsive">
+            <table class="table table-sm align-middle">
+              <thead>
+                <tr>
+                  <th style="width:40px"></th>
+                  <th style="width:120px">Código</th>
+                  <th>Nome</th>
+                  <th style="width:120px">Qtd</th>
+                </tr>
+              </thead>
+              <tbody id="tbodyModalProdutos"></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+          <button type="button" id="btnAddSelecionados" class="btn btn-primary">Adicionar selecionados</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <script>
     // =====================
     // Configuração de APIs
@@ -120,6 +193,52 @@
       produtosUrl: 'https://novaapi-lb2.vendaerp.com.br/v3/produtos/produtos',
       salvarSolicitacaoUrl: 'https://example.com/api/solicitacoes'
     };
+
+    // Parâmetros opcionais por recurso (ex.: paginação/filtros exigidos pela API)
+    const API_PARAMS = {
+      produtos: {
+        // Exemplo: page: 1, limit: 100, ativo: true
+      }
+    };
+
+    // Configuração por recurso (método/corpo) — útil para APIs que exigem POST em listagens
+    const API_REQUEST = {
+      produtos: {
+        method: 'POST', // Alguns endpoints retornam 405 para GET; tente POST
+        body: {         // Ajuste conforme filtros exigidos pela API
+          Pagina: { Number: 0, Lenght: 100 }
+        }
+      }
+    };
+
+    // Token da API (cole aqui se a API exigir Authorization Bearer)
+    // Ex.: const API_TOKEN = 'seu_token_aqui';
+    const API_TOKEN = 'f984c93b1521bad941808d4179ad28f7';
+
+    // Configuração do header de autenticação
+    // mode: 'bearer' | 'plain' | 'x-api-key' | 'none'
+    // - bearer -> Authorization: Bearer <token>
+    // - plain  -> Authorization: <token>
+    // - x-api-key -> X-API-Key: <token>
+    // Ajuste conforme sua API
+    const API_AUTH = {
+      mode: 'bearer',
+      headerName: 'Authorization',
+      prefix: 'Bearer '
+    };
+
+    function getAuthHeaders() {
+      if (!API_TOKEN) return {};
+      if (API_AUTH.mode === 'none') return {};
+      if (API_AUTH.mode === 'x-api-key') {
+        return { 'X-API-Key': API_TOKEN };
+      }
+      if (API_AUTH.mode === 'plain') {
+        return { 'Authorization': API_TOKEN };
+      }
+      // default bearer
+      return { [API_AUTH.headerName || 'Authorization']: `${API_AUTH.prefix || 'Bearer '}${API_TOKEN}` };
+    }
 
     // Toggle para simular dados caso APIs falhem (mantém a página utilizável)
     const USE_FALLBACK_ON_ERROR = true;
@@ -151,10 +270,102 @@
       }
     }
 
+    // Overlay de carregamento
+    function showLoading(message = 'Carregando...') {
+      const el = document.getElementById('globalLoading');
+      const txt = document.getElementById('globalLoadingText');
+      if (!el) return;
+      // Garante que o overlay fique no topo da pilha
+      try { document.body.appendChild(el); } catch {}
+      if (txt) txt.textContent = message;
+      el.classList.remove('d-none');
+      el.style.display = 'flex';
+      el.style.visibility = 'visible';
+      el.setAttribute('aria-hidden', 'false');
+      // Evita rolagem enquanto carrega
+      document.body.classList.add('overflow-hidden');
+    }
+
+    function hideLoading() {
+      const el = document.getElementById('globalLoading');
+      if (!el) return;
+      el.classList.add('d-none');
+      el.style.display = 'none';
+      el.style.visibility = 'hidden';
+      el.setAttribute('aria-hidden', 'true');
+      document.body.classList.remove('overflow-hidden');
+    }
+
+    // Helper para exibir overlay durante uma operação assíncrona
+    async function withLoading(message, fn) {
+      showLoading(message);
+      // dá tempo do navegador pintar o overlay
+      await new Promise(r => setTimeout(r, 30));
+      try {
+        return await fn();
+      } finally {
+        hideLoading();
+      }
+    }
+
     // Fetch helpers
+    function buildUrl(base, params) {
+      if (!params || !Object.keys(params).length) return base;
+      const url = new URL(base, window.location.origin);
+      Object.entries(params).forEach(([k, v]) => {
+        if (v !== undefined && v !== null && v !== '') url.searchParams.set(k, String(v));
+      });
+      return url.toString();
+    }
+
     async function fetchJson(url) {
-      const resp = await fetch(url, { headers: { 'Accept': 'application/json' } });
+      const resp = await fetch(url, { headers: { 'Accept': 'application/json', ...getAuthHeaders() } });
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      return await resp.json();
+    }
+
+    // Busca todas as páginas de produtos quando o backend retorna Data.Paginas
+    async function fetchAllProdutosPages(baseUrl, reqCfg, queryParams) {
+      const firstBody = reqCfg.body && reqCfg.body.Pagina ? reqCfg.body : { ...reqCfg.body, Pagina: { Number: 0, Lenght: 100 } };
+      const first = await requestJson(baseUrl, { method: reqCfg.method || 'POST', params: queryParams, body: firstBody });
+      // Se não houver paginação estruturada, retorna direto
+      const paginas = first && first.Data && Array.isArray(first.Data.Paginas) ? first.Data.Paginas : [];
+      if (!paginas.length) return first;
+
+      // Agrega itens de todas as páginas
+      const allItens = Array.isArray(first?.Data?.Itens) ? [...first.Data.Itens] : [];
+      const promises = [];
+      for (const p of paginas) {
+        const num = typeof p.Number === 'number' ? p.Number : parseInt(p.Number, 10);
+        if (num === 0 || Number.isNaN(num)) continue; // já temos a página 0
+        const body = { ...(reqCfg.body || {}), Pagina: { Number: num, Lenght: p.Lenght ?? firstBody.Pagina.Lenght } };
+        promises.push(requestJson(baseUrl, { method: reqCfg.method || 'POST', params: queryParams, body }));
+      }
+      const pages = await Promise.all(promises);
+      for (const pg of pages) {
+        if (pg && pg.Data && Array.isArray(pg.Data.Itens)) allItens.push(...pg.Data.Itens);
+      }
+      return { Data: { Itens: allItens } };
+    }
+
+    async function requestJson(baseUrl, { method = 'GET', params = undefined, body = undefined, extraHeaders = {} } = {}) {
+      const url = buildUrl(baseUrl, params);
+      const options = {
+        method,
+        headers: {
+          'Accept': 'application/json',
+          ...getAuthHeaders(),
+          ...extraHeaders
+        }
+      };
+      if (method !== 'GET' && method !== 'HEAD') {
+        options.headers['Content-Type'] = options.headers['Content-Type'] || 'application/json';
+        options.body = body != null ? (typeof body === 'string' ? body : JSON.stringify(body)) : undefined;
+      }
+      const resp = await fetch(url, options);
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      // algumas APIs podem não retornar JSON em 204
+      if (resp.status === 204) return null;
       return await resp.json();
     }
 
@@ -188,23 +399,96 @@
         state.centrosCusto.map(cc => `<option value="${cc.id}">${cc.nome}</option>`).join('');
     }
 
+    // Normalização de produtos para diferentes formatos de API
+    function normalizeProdutos(data) {
+      if (!data) return [];
+
+      // 1) Preferência explícita: Data.Itens (conforme JSON enviado)
+      if (data && data.Data && Array.isArray(data.Data.Itens)) {
+        return data.Data.Itens.map(p => {
+          const rawId = p.Id ?? p.ID ?? p.Codigo ?? p.codigo;
+          const id = typeof rawId === 'number' ? String(rawId) : rawId;
+          const nome = p.Nome ?? p.NomeWeb ?? p.Descricao ?? p.descricao ?? p.name;
+          const codigo = p.Codigo ?? p.codigo ?? null;
+          return { id, nome: String(nome ?? id ?? ''), codigo };
+        }).filter(p => p.id && p.nome);
+      }
+
+      // 2) Outras variações comuns: Itens na raiz, ou chaves conhecidas
+      const candidateArrays = [];
+      const tryPush = (arr) => { if (Array.isArray(arr) && arr.length) candidateArrays.push(arr); };
+      tryPush(data.Itens);
+      tryPush(data.items);
+      tryPush(data.data);
+      tryPush(data.result);
+      tryPush(data.produtos);
+      tryPush(data.lista);
+      tryPush(data.rows);
+
+      // 3) Busca profunda: prioriza arrays com itens que tenham aparência de produto (Nome/Id/Codigo)
+      function collectArraysDeep(obj, depth = 0) {
+        if (!obj || depth > 5) return;
+        if (Array.isArray(obj)) { tryPush(obj); return; }
+        if (typeof obj !== 'object') return;
+        for (const v of Object.values(obj)) collectArraysDeep(v, depth + 1);
+      }
+      collectArraysDeep(data);
+
+      // Heurística: escolher o primeiro array que possua objetos com alguma das chaves típicas
+      const looksLikeProducts = (arr) => arr.some(x => x && typeof x === 'object' && (
+        'Nome' in x || 'nome' in x || 'Descricao' in x || 'descricao' in x || 'Id' in x || 'ID' in x || 'Codigo' in x || 'codigo' in x
+      ));
+      const arr = candidateArrays.find(looksLikeProducts) || candidateArrays[0] || [];
+
+      return arr
+        .filter(x => x && typeof x === 'object')
+        .map(p => {
+          const rawId = p.Id ?? p.ID ?? p.Codigo ?? p.codigo ?? p.productId ?? p.idProduto ?? p.CodProduto ?? p.sku;
+          const id = typeof rawId === 'number' ? String(rawId) : rawId;
+          const nome = p.Nome ?? p.nome ?? p.NomeWeb ?? p.Descricao ?? p.descricao ?? p.descricaoProduto ?? p.name ?? p.product_name ?? p.titulo;
+          const codigo = p.Codigo ?? p.codigo ?? null;
+          return { id, nome: String(nome ?? id ?? ''), codigo };
+        })
+        .filter(p => p.id && p.nome);
+    }
+
     // Carregar produtos
     async function loadProdutos() {
       const select = document.getElementById('produto');
       setLoading(select, true);
       try {
-        const data = await fetchJson(API.produtosUrl);
-        state.produtos = Array.isArray(data) ? data : [];
+        const reqCfg = API_REQUEST.produtos || { method: 'GET' };
+        const data = await fetchAllProdutosPages(API.produtosUrl, reqCfg, API_PARAMS.produtos);
+        console.log('Resposta Produtos:', data);
+        const norm = normalizeProdutos(data);
+        if (!norm.length) {
+          showAlert('warning', 'A API de Produtos respondeu, mas não retornou itens reconhecíveis. Verifique o formato.');
+        }
+        state.produtos = norm;
       } catch (e) {
-        if (USE_FALLBACK_ON_ERROR) {
+        const msg = String(e && e.message || '');
+        console.error('Erro ao carregar Produtos:', e);
+        // Em erros de autenticação, não usar fallback para não mascarar o problema
+        if (msg.includes('HTTP 401') || msg.includes('HTTP 403')) {
+          showAlert('danger', 'Falha de autenticação para Produtos (401/403). Confira o token e o formato do header.');
+          state.produtos = [];
+        } else if (msg.includes('HTTP 405')) {
+          showAlert('danger', 'Endpoint de Produtos retornou 405 (Method Not Allowed). Tente mudar o método em API_REQUEST.produtos (GET/POST).');
+          state.produtos = [];
+        } else if (USE_FALLBACK_ON_ERROR) {
           state.produtos = [
             { id: 'p-1', nome: 'Caneta esferográfica' },
             { id: 'p-2', nome: 'Caderno brochura' },
             { id: 'p-3', nome: 'Papel A4' }
           ];
-          showAlert('warning', 'Falha ao buscar Produtos na API. Usando dados temporários.');
+          // Tenta extrair status de msg "HTTP NNN"
+          const match = msg.match(/HTTP\s+(\d{3})/);
+          const status = match ? match[1] : 'erro desconhecido';
+          showAlert('warning', `Falha ao buscar Produtos na API (status: ${status}). Usando dados temporários.`);
         } else {
-          showAlert('danger', 'Não foi possível carregar Produtos.');
+          const match = msg.match(/HTTP\s+(\d{3})/);
+          const status = match ? match[1] : 'erro desconhecido';
+          showAlert('danger', `Não foi possível carregar Produtos (status: ${status}).`);
         }
       } finally {
         renderProdutos();
@@ -337,11 +621,13 @@
       btnSalvar.innerText = 'Salvando...';
 
       try {
+        showLoading('Salvando solicitação...');
         const resp = await fetch(API.salvarSolicitacaoUrl, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'Accept': 'application/json'
+            'Accept': 'application/json',
+            ...getAuthHeaders()
           },
           body: JSON.stringify(payload)
         });
@@ -363,6 +649,7 @@
       } finally {
         btnSalvar.disabled = false;
         btnSalvar.innerText = 'Salvar solicitação';
+        hideLoading();
       }
     }
 
@@ -397,13 +684,148 @@
 
       document.getElementById('btnImprimir').addEventListener('click', () => window.print());
       document.getElementById('btnToggleEdit').addEventListener('click', toggleEditMode);
+
+      // Modal de produtos
+      const btnAbrir = document.getElementById('btnAbrirModalProdutos');
+      const modalEl = document.getElementById('modalProdutos');
+      const searchEl = document.getElementById('produtoSearch');
+      const tbodyModal = document.getElementById('tbodyModalProdutos');
+      const btnAddSel = document.getElementById('btnAddSelecionados');
+      const btnCarregar = document.getElementById('btnCarregarProdutos');
+      const lblInfo = document.getElementById('lblModalProdutosInfo');
+
+      const modalState = { selected: new Map(), filtered: [], limit: 100 };
+
+      function renderModalProdutos() {
+        const term = (searchEl.value || '').toLowerCase().trim();
+        const base = Array.isArray(state.produtos) ? state.produtos : [];
+        const filtered = term
+          ? base.filter(p => `${p.codigo ?? ''}`.toLowerCase().includes(term) || (p.nome || '').toLowerCase().includes(term))
+          : base;
+        const total = filtered.length;
+        modalState.filtered = filtered.slice(0, modalState.limit);
+        if (lblInfo) {
+          const shown = modalState.filtered.length;
+          lblInfo.textContent = `Mostrando ${shown}${shown < total ? ` de ${total}` : ''} resultado(s)`;
+        }
+        tbodyModal.innerHTML = modalState.filtered.map(p => {
+          const checked = modalState.selected.has(p.id) ? 'checked' : '';
+          const qtd = modalState.selected.get(p.id)?.quantidade ?? 1;
+          return `
+            <tr>
+              <td><input type="checkbox" class="form-check-input" data-role="sel" data-id="${p.id}"></td>
+              <td>${p.codigo ?? p.id}</td>
+              <td>${p.nome}</td>
+              <td style="max-width:120px">
+                <input type="number" min="1" step="1" class="form-control form-control-sm" data-role="qtd" data-id="${p.id}" value="${qtd}" ${checked ? '' : ''}>
+              </td>
+            </tr>`;
+        }).join('');
+
+        // Apply checked states after render
+        tbodyModal.querySelectorAll('input[data-role="sel"]').forEach(cb => {
+          const id = cb.dataset.id;
+          cb.checked = modalState.selected.has(id);
+        });
+
+        // Events
+        tbodyModal.querySelectorAll('input[data-role="sel"]').forEach(cb => {
+          cb.addEventListener('change', (e) => {
+            const id = e.target.dataset.id;
+            const qtdInp = tbodyModal.querySelector(`input[data-role="qtd"][data-id="${id}"]`);
+            const qtdVal = parseInt(qtdInp?.value || '1', 10) || 1;
+            if (e.target.checked) {
+              modalState.selected.set(id, { quantidade: qtdVal });
+            } else {
+              modalState.selected.delete(id);
+            }
+          });
+        });
+
+        tbodyModal.querySelectorAll('input[data-role="qtd"]').forEach(inp => {
+          inp.addEventListener('change', (e) => {
+            const id = e.target.dataset.id;
+            const q = parseInt(e.target.value || '1', 10) || 1;
+            if (modalState.selected.has(id)) {
+              modalState.selected.set(id, { quantidade: q });
+            }
+          });
+        });
+      }
+
+      function openProductModal() {
+        modalState.selected.clear();
+        searchEl.value = '';
+        modalState.limit = 100;
+        renderModalProdutos();
+        const modal = new bootstrap.Modal(modalEl);
+        modal.show();
+        // Guardar a ref para fechar ao confirmar
+        modalEl._instance = modal;
+      }
+
+      if (btnAbrir) btnAbrir.addEventListener('click', openProductModal);
+      if (searchEl) searchEl.addEventListener('input', renderModalProdutos);
+      if (btnCarregar) btnCarregar.addEventListener('click', async () => {
+        btnCarregar.disabled = true;
+        const originalText = btnCarregar.textContent;
+        btnCarregar.textContent = 'Carregando...';
+        showLoading('Carregando todos os produtos...');
+        // Garante que o overlay renderize antes da operação pesada
+        await new Promise(r => setTimeout(r, 50));
+        try {
+          const baseCfg = API_REQUEST.produtos || { method: 'POST', body: {} };
+          const cfg = JSON.parse(JSON.stringify(baseCfg));
+          if (!cfg.body) cfg.body = {};
+          // Tenta carregar com página maior e todas as páginas
+          cfg.body.Pagina = { Number: 0, Lenght: 1000 };
+          const data = await fetchAllProdutosPages(API.produtosUrl, cfg, API_PARAMS.produtos);
+          const norm = normalizeProdutos(data);
+          if (!norm.length) {
+            showAlert('warning', 'Nenhum produto retornado ao carregar todos.');
+          }
+          state.produtos = norm;
+          // Remover limite após carregar todos
+          modalState.limit = Number.MAX_SAFE_INTEGER;
+          renderModalProdutos();
+        } catch (e) {
+          console.error('Falha ao carregar todos os produtos:', e);
+          showAlert('danger', 'Falha ao carregar todos os produtos.');
+        } finally {
+          btnCarregar.disabled = false;
+          btnCarregar.textContent = originalText;
+          hideLoading();
+        }
+      });
+      if (btnAddSel) btnAddSel.addEventListener('click', () => {
+        if (!modalState.selected.size) {
+          showAlert('warning', 'Selecione ao menos um produto.');
+          return;
+        }
+        // Adiciona cada produto selecionado com a quantidade escolhida
+        for (const [id, { quantidade }] of modalState.selected.entries()) {
+          const produto = state.produtos.find(p => String(p.id) === String(id));
+          if (!produto) continue;
+          const existente = state.itens.find(i => String(i.produtoId) === String(id));
+          if (existente) {
+            existente.quantidade += quantidade;
+          } else {
+            state.itens.push({ idTemp: crypto.randomUUID(), produtoId: id, produtoNome: produto.nome, quantidade });
+          }
+        }
+        renderItens();
+        // Fecha modal
+        if (modalEl._instance) modalEl._instance.hide();
+      });
     }
 
     // Inicialização
     async function init() {
       setupEvents();
       renderItens();
-      await Promise.all([loadCentrosCusto(), loadProdutos()]);
+      await withLoading('Carregando dados...', async () => {
+        await Promise.all([loadCentrosCusto(), loadProdutos()]);
+      });
     }
 
     window.addEventListener('DOMContentLoaded', init);

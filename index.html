@@ -93,7 +93,8 @@
             <label class="form-label required">Produto</label>
             <div class="d-flex gap-2">
               <button id="btnAbrirModalProdutos" type="button" class="btn btn-outline-secondary flex-shrink-0">Selecionar produto(s)</button>
-              <select id="produto" class="form-select d-none">
+              <button id="btnCarregar" type="button" class="btn btn-outline-primary flex-shrink-0">Carregar</button>
+              <select id="produto" class="form-select">
                 <option value="">Carregando...</option>
               </select>
             </div>
@@ -189,8 +190,8 @@
     // - GET produtos: retorna array de { id, nome }
     // - POST salvar solicitação: recebe { solicitante, centroCustoId, narrativa, itens:[{produtoId, quantidade}] }
     const API = {
-      centrosCustoUrl: 'https://example.com/api/centros-custo',
       produtosUrl: 'https://novaapi-lb2.vendaerp.com.br/v3/produtos/produtos',
+      centrosCustoUrl: 'https://example.com/api/centros-custo',
       salvarSolicitacaoUrl: 'https://example.com/api/solicitacoes'
     };
 
@@ -204,16 +205,35 @@
     // Configuração por recurso (método/corpo) — útil para APIs que exigem POST em listagens
     const API_REQUEST = {
       produtos: {
-        method: 'POST', // Alguns endpoints retornam 405 para GET; tente POST
-        body: {         // Ajuste conforme filtros exigidos pela API
-          Pagina: { Number: 0, Lenght: 100 }
-        }
+        method: 'POST', // API exige POST (GET resulta em 405)
+        body: { Pagina: { Number: 0, Lenght: 100 } }
       }
     };
 
+    // Helper para ler cookie com segurança (usado para obter o token em produção)
+    function getCookie(name) {
+      if (typeof document === 'undefined' || !name) return null;
+      const pattern = new RegExp('(?:^|; )' + name.replace(/([.$?*|{}()\[\]\/\+^])/g, '\\$1') + '=([^;]*)');
+      const match = document.cookie.match(pattern);
+      return match ? decodeURIComponent(match[1]) : null;
+    }
+
+    // Helper para ler meta tag <meta name="..." content="...">
+    function getMeta(name) {
+      if (typeof document === 'undefined' || !name) return null;
+      const el = document.querySelector(`meta[name="${name}"]`);
+      return el ? el.getAttribute('content') : null;
+    }
+
     // Token da API (cole aqui se a API exigir Authorization Bearer)
     // Ex.: const API_TOKEN = 'seu_token_aqui';
-    const API_TOKEN = 'f984c93b1521bad941808d4179ad28f7';
+    const API_TOKEN = 'eca80d9f279a583d0714bb686fd0b4b5';
+    //const API_TOKEN = (typeof window !== 'undefined' && (window.ERPUSETOKEN || window.ERPTOKEN))
+      //|| getMeta('erpusertoken')
+      //|| getCookie('erpusertoken')
+      //|| (typeof localStorage !== 'undefined' ? localStorage.getItem('erpusertoken') : null)
+      //|| (typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('erpusertoken') : null)
+      //|| 'token-nao-encontrado';
 
     // Configuração do header de autenticação
     // mode: 'bearer' | 'plain' | 'x-api-key' | 'none'
@@ -228,7 +248,7 @@
     };
 
     function getAuthHeaders() {
-      if (!API_TOKEN) return {};
+      if (!API_TOKEN || API_TOKEN === 'token-nao-encontrado') return {};
       if (API_AUTH.mode === 'none') return {};
       if (API_AUTH.mode === 'x-api-key') {
         return { 'X-API-Key': API_TOKEN };
@@ -247,6 +267,7 @@
     const state = {
       centrosCusto: [],
       produtos: [],
+      produtosLoaded: false,
       itens: [], // { idTemp, produtoId, produtoNome, quantidade }
       editMode: false
     };
@@ -326,6 +347,10 @@
 
     // Busca todas as páginas de produtos quando o backend retorna Data.Paginas
     async function fetchAllProdutosPages(baseUrl, reqCfg, queryParams) {
+      // Se for GET, retorna uma única chamada sem paginação por body
+      if ((reqCfg.method || 'GET').toUpperCase() === 'GET') {
+        return await requestJson(baseUrl, { method: 'GET', params: queryParams });
+      }
       const firstBody = reqCfg.body && reqCfg.body.Pagina ? reqCfg.body : { ...reqCfg.body, Pagina: { Number: 0, Lenght: 100 } };
       const first = await requestJson(baseUrl, { method: reqCfg.method || 'POST', params: queryParams, body: firstBody });
       // Se não houver paginação estruturada, retorna direto
@@ -458,48 +483,144 @@
       setLoading(select, true);
       try {
         const reqCfg = API_REQUEST.produtos || { method: 'GET' };
-        const data = await fetchAllProdutosPages(API.produtosUrl, reqCfg, API_PARAMS.produtos);
-        console.log('Resposta Produtos:', data);
-        const norm = normalizeProdutos(data);
-        if (!norm.length) {
-          showAlert('warning', 'A API de Produtos respondeu, mas não retornou itens reconhecíveis. Verifique o formato.');
+        // Log de auth (sem expor token)
+        try {
+          const hasToken = !!API_TOKEN && API_TOKEN !== 'token-nao-encontrado';
+          console.log('[Produtos] Auth mode:', API_AUTH.mode, '| Token presente:', hasToken);
+        } catch {}
+
+        // Carrega apenas a primeira página para evitar muitas requisições paralelas
+        const data = await requestJson(API.produtosUrl, { method: reqCfg.method || 'POST', params: API_PARAMS.produtos, body: reqCfg.body });
+        window.__lastProdutosResponse = data; // facilitar inspeção no console
+        console.log('Resposta Produtos (bruta):', data);
+        // Atalho: se vier no formato esperado Data.Itens, mapeia diretamente
+        if (data && data.Data && Array.isArray(data.Data.Itens) && data.Data.Itens.length) {
+          const mapped = data.Data.Itens
+            .filter(p => p && (p.Id != null || p.Codigo != null || p.ID != null))
+            .map(p => {
+              const rawId = p.Id ?? p.ID ?? p.Codigo ?? p.codigo;
+              const id = typeof rawId === 'number' ? String(rawId) : String(rawId);
+              const nome = p.Nome ?? p.NomeWeb ?? p.Descricao ?? p.descricao ?? id;
+              const codigo = p.Codigo ?? p.codigo ?? null;
+              return { id, nome: String(nome), codigo };
+            })
+            .filter(p => p.id && p.nome);
+          state.produtos = mapped;
+          state.produtosLoaded = true;
+          console.log('Produtos mapeados via Data.Itens:', { count: mapped.length, sample: mapped.slice(0,3) });
+          // Renderiza imediatamente e garante visibilidade do select
+          try {
+            const selectEl = document.getElementById('produto');
+            if (selectEl) {
+              // Preenche diretamente as opções para evitar qualquer race
+              selectEl.innerHTML = '<option value="">Selecione...</option>' +
+                mapped.map(p => `<option value="${p.id}">${p.nome}</option>`).join('');
+              selectEl.classList.remove('d-none');
+            }
+            // Também realiza o render padrão
+            renderProdutos();
+            console.log('Opções no select:', document.querySelectorAll('#produto option').length);
+          } catch {}
+          showAlert('success', `Produtos carregados: ${mapped.length}`);
+          return;
         }
-        state.produtos = norm;
+        const norm = normalizeProdutos(data);
+        console.log('Produtos normalizados:', { count: norm.length, sample: norm.slice(0, 3) });
+        if (!norm.length) {
+          showAlert('warning', 'A API de Produtos respondeu sem itens. Tentando fallback GET...');
+          try {
+            const topKeys = data && typeof data === 'object' ? Object.keys(data).slice(0, 10) : [];
+            const innerKeys = data && data.Data && typeof data.Data === 'object' ? Object.keys(data.Data).slice(0, 10) : [];
+            showAlert('info', `Chaves recebidas: ${topKeys.join(', ')}${innerKeys.length ? ' | Data: ' + innerKeys.join(', ') : ''}`);
+          } catch {}
+          // Fallback: tentar GET simples
+          try {
+            const dataGet = await requestJson(API.produtosUrl, { method: 'GET', params: API_PARAMS.produtos });
+            const normGet = normalizeProdutos(dataGet);
+            if (!normGet.length) {
+              showAlert('warning', 'Fallback GET também não retornou itens. Verifique formato/resposta da API.');
+            }
+            state.produtos = normGet;
+            state.produtosLoaded = state.produtos.length > 0;
+          } catch (e2) {
+            console.error('Erro no fallback GET de Produtos:', e2);
+            throw e2; // delega para o catch externo para aplicar fallback se habilitado
+          }
+        } else {
+          state.produtos = norm;
+          state.produtosLoaded = state.produtos.length > 0;
+          showAlert('success', `Produtos carregados: ${norm.length}`);
+        }
       } catch (e) {
         const msg = String(e && e.message || '');
         console.error('Erro ao carregar Produtos:', e);
         // Em erros de autenticação, não usar fallback para não mascarar o problema
         if (msg.includes('HTTP 401') || msg.includes('HTTP 403')) {
           showAlert('danger', 'Falha de autenticação para Produtos (401/403). Confira o token e o formato do header.');
-          state.produtos = [];
+          if (!state.produtosLoaded) state.produtos = [];
         } else if (msg.includes('HTTP 405')) {
           showAlert('danger', 'Endpoint de Produtos retornou 405 (Method Not Allowed). Tente mudar o método em API_REQUEST.produtos (GET/POST).');
-          state.produtos = [];
-        } else if (USE_FALLBACK_ON_ERROR) {
-          state.produtos = [
-            { id: 'p-1', nome: 'Caneta esferográfica' },
-            { id: 'p-2', nome: 'Caderno brochura' },
-            { id: 'p-3', nome: 'Papel A4' }
-          ];
-          // Tenta extrair status de msg "HTTP NNN"
-          const match = msg.match(/HTTP\s+(\d{3})/);
-          const status = match ? match[1] : 'erro desconhecido';
-          showAlert('warning', `Falha ao buscar Produtos na API (status: ${status}). Usando dados temporários.`);
+          if (!state.produtosLoaded) state.produtos = [];
         } else {
           const match = msg.match(/HTTP\s+(\d{3})/);
           const status = match ? match[1] : 'erro desconhecido';
           showAlert('danger', `Não foi possível carregar Produtos (status: ${status}).`);
         }
       } finally {
-        renderProdutos();
+        // Só re-renderiza automaticamente se houver produtos no estado,
+        // para não apagar opções já preenchidas em casos de corrida
+        if (Array.isArray(state.produtos) && state.produtos.length > 0) {
+          renderProdutos();
+        }
         setLoading(select, false);
+        try {
+          if (Array.isArray(state.produtos) && state.produtos.length > 0) {
+            select.classList.remove('d-none');
+          }
+        } catch {}
       }
     }
 
     function renderProdutos() {
       const select = document.getElementById('produto');
+      try { console.log('[renderProdutos] state.produtos.length:', Array.isArray(state.produtos) ? state.produtos.length : 'n/a'); } catch {}
+      // Se por algum motivo o estado estiver vazio mas a última resposta tiver itens, mapeia aqui
+      try {
+        if ((!Array.isArray(state.produtos) || state.produtos.length === 0)
+            && window.__lastProdutosResponse?.Data?.Itens?.length) {
+          const itens = window.__lastProdutosResponse.Data.Itens;
+          const mapped = itens
+            .filter(p => p && (p.Id != null || p.Codigo != null || p.ID != null))
+            .map(p => {
+              const rawId = p.Id ?? p.ID ?? p.Codigo ?? p.codigo;
+              const id = typeof rawId === 'number' ? String(rawId) : String(rawId);
+              const nome = p.Nome ?? p.NomeWeb ?? p.Descricao ?? p.descricao ?? id;
+              const codigo = p.Codigo ?? p.codigo ?? null;
+              return { id, nome: String(nome), codigo };
+            })
+            .filter(p => p.id && p.nome);
+          if (mapped.length) {
+            console.log('[renderProdutos] repovoando a partir de __lastProdutosResponse:', mapped.length);
+            state.produtos = mapped;
+          }
+        }
+      } catch {}
+      // Evita limpar opções válidas quando state.produtos estiver vazio
+      const hadOptions = select.querySelectorAll('option').length > 1;
+      if ((!Array.isArray(state.produtos) || state.produtos.length === 0) && hadOptions) {
+        console.log('[renderProdutos] preservando opções existentes (estado vazio)');
+        return;
+      }
       select.innerHTML = '<option value="">Selecione...</option>' +
         state.produtos.map(p => `<option value="${p.id}">${p.nome}</option>`).join('');
+      try {
+        const optCount = select.querySelectorAll('option').length;
+        console.log('[renderProdutos] options:', optCount);
+        if (state.produtos.length > 0 && select.selectedIndex === 0) {
+          select.selectedIndex = 1; // auto-seleciona o primeiro produto
+          select.dispatchEvent(new Event('change'));
+        }
+      } catch {}
     }
 
     // Manipulação de itens
@@ -677,6 +798,13 @@
         clearItemForm();
       });
 
+      document.getElementById('btnCarregar').addEventListener('click', async (e) => {
+        e.preventDefault();
+        await withLoading('Carregando produtos...', async () => {
+          await loadProdutos();
+        });
+      });
+
       document.getElementById('btnSalvar').addEventListener('click', (e) => {
         e.preventDefault();
         salvarSolicitacao();
@@ -823,6 +951,10 @@
     async function init() {
       setupEvents();
       renderItens();
+      // Alerta imediato se o token não for encontrado
+      if (!API_TOKEN || API_TOKEN === 'token-nao-encontrado') {
+        showAlert('danger', 'Token de autenticação não encontrado. Produtos podem não carregar (401/403).');
+      }
       await withLoading('Carregando dados...', async () => {
         await Promise.all([loadCentrosCusto(), loadProdutos()]);
       });
